@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-espeak-rs = "0.1.9"
+espeak-rs = { git = "https://github.com/maan2003/espeak-rs", branch = "main" }
 hound = "3.5.1"
 indicatif = "0.17.11"
 ndarray = "0.16.1"
@@ -20,8 +20,7 @@ uuid = { version = "1.0", features = ["v4"] }
 opus = "0.3"
 ogg = "0.9"
 
-# Base ONNX Runtime configuration
-ort = { version = "2.0.0-rc.11", default-features = true }
+ort = { version = "2.0.0-rc.11", features = ["ndarray", "std", "tracing", "pkg-config" ] }
 
 [features]
 default = ["cpu"]
