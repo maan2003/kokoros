@@ -3,6 +3,7 @@ use kokoros::{
     tts::koko::{TTSKoko, TTSOpts},
     utils::wav::{WavHeader, write_audio_chunk},
 };
+use listenfd::ListenFd;
 use std::net::{IpAddr, SocketAddr};
 use std::{
     fs::{self},
@@ -70,15 +71,7 @@ enum Mode {
 
     /// Start an OpenAI-compatible HTTP server
     #[command(name = "openai", alias = "oai", long_flag_aliases = ["oai", "openai"])]
-    OpenAI {
-        /// IP address to bind to (typically 127.0.0.1 or 0.0.0.0)
-        #[arg(long, default_value_t = [0, 0, 0, 0].into())]
-        ip: IpAddr,
-
-        /// Port to expose the HTTP server on
-        #[arg(long, default_value_t = 3000)]
-        port: u16,
-    },
+    OpenAI,
 }
 
 #[derive(Parser, Debug)]
@@ -376,7 +369,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Words per second: {:.2}", words_per_second);
             }
 
-            Mode::OpenAI { ip, port } => {
+            Mode::OpenAI => {
                 // Create multiple independent TTS instances for parallel processing
                 let mut tts_instances = Vec::new();
                 for i in 0..instances {
@@ -390,10 +383,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tts_instances.push(instance);
                 }
                 let app = kokoros_openai::create_server(tts_instances).await;
-                let addr = SocketAddr::from((ip, port));
-                let binding = tokio::net::TcpListener::bind(&addr).await?;
-                tracing::info!("Starting OpenAI-compatible HTTP server on {}", addr);
-                kokoros_openai::serve(binding, app.into_make_service()).await?;
+
+                let mut listenfd = ListenFd::from_env();
+
+                if let Ok(Some(listener)) = listenfd.take_tcp_listener(0) {
+                    tracing::info!("Starting OpenAI-compatible HTTP server via listenfd (TCP)");
+                    listener.set_nonblocking(true)?;
+                    let listener = tokio::net::TcpListener::from_std(listener)?;
+                    kokoros_openai::serve(listener, app.into_make_service()).await?;
+                } else if let Ok(Some(listener)) = listenfd.take_unix_listener(0) {
+                    tracing::info!("Starting OpenAI-compatible HTTP server via listenfd (Unix)");
+                    listener.set_nonblocking(true)?;
+                    let listener = tokio::net::UnixListener::from_std(listener)?;
+                    kokoros_openai::serve(listener, app.into_make_service()).await?;
+                } else {
+                    return Err(
+                        "No listener provided via listenfd. Use system to pass a socket.".into(),
+                    );
+                }
             }
 
             Mode::Stream => {
