@@ -386,21 +386,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let mut listenfd = ListenFd::from_env();
 
-                if let Ok(Some(listener)) = listenfd.take_tcp_listener(0) {
-                    tracing::info!("Starting OpenAI-compatible HTTP server via listenfd (TCP)");
-                    listener.set_nonblocking(true)?;
-                    let listener = tokio::net::TcpListener::from_std(listener)?;
-                    kokoros_openai::serve(listener, app.into_make_service()).await?;
-                } else if let Ok(Some(listener)) = listenfd.take_unix_listener(0) {
-                    tracing::info!("Starting OpenAI-compatible HTTP server via listenfd (Unix)");
-                    listener.set_nonblocking(true)?;
-                    let listener = tokio::net::UnixListener::from_std(listener)?;
-                    kokoros_openai::serve(listener, app.into_make_service()).await?;
-                } else {
-                    return Err(
-                        "No listener provided via listenfd. Use system to pass a socket.".into(),
-                    );
-                }
+                let listener = listenfd.take_unix_listener(0)?.expect("listener not found");
+                tracing::info!("Starting OpenAI-compatible HTTP server via listenfd (Unix)");
+                listener.set_nonblocking(true)?;
+                let listener = tokio::net::UnixListener::from_std(listener)?;
+                kokoros_openai::serve(listener, app.into_make_service()).await?;
             }
 
             Mode::Stream => {
