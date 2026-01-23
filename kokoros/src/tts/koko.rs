@@ -86,16 +86,12 @@ pub struct TTSKokoParallel {
 
 #[derive(Clone)]
 pub struct InitConfig {
-    pub model_url: String,
-    pub voices_url: String,
     pub sample_rate: u32,
 }
 
 impl Default for InitConfig {
     fn default() -> Self {
         Self {
-            model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx".into(),
-            voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin".into(),
             sample_rate: 24000,
         }
     }
@@ -108,15 +104,11 @@ impl TTSKoko {
 
     pub async fn from_config(model_path: &str, voices_path: &str, cfg: InitConfig) -> Self {
         if !Path::new(model_path).exists() {
-            utils::fileio::download_file_from_url(cfg.model_url.as_str(), model_path)
-                .await
-                .expect("download model failed.");
+            panic!("model file not found: {}", model_path);
         }
 
         if !Path::new(voices_path).exists() {
-            utils::fileio::download_file_from_url(cfg.voices_url.as_str(), voices_path)
-                .await
-                .expect("download voices data file failed.");
+            panic!("voices data file not found: {}", voices_path);
         }
 
         let model = Arc::new(Mutex::new(
@@ -1072,15 +1064,11 @@ impl TTSKokoParallel {
         num_instances: usize,
     ) -> Self {
         if !Path::new(model_path).exists() {
-            utils::fileio::download_file_from_url(cfg.model_url.as_str(), model_path)
-                .await
-                .expect("download model failed.");
+            panic!("model file not found: {}", model_path);
         }
 
         if !Path::new(voices_path).exists() {
-            utils::fileio::download_file_from_url(cfg.voices_url.as_str(), voices_path)
-                .await
-                .expect("download voices data file failed.");
+            panic!("voices data file not found: {}", voices_path);
         }
 
         // Create multiple ONNX model instances
