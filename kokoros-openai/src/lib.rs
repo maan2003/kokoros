@@ -20,6 +20,7 @@
 
 use std::error::Error;
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -443,7 +444,22 @@ struct ModelsResponse {
     data: Vec<ModelObject>,
 }
 
+/// Application state including optional idle tracking
+#[derive(Clone)]
+pub struct AppState {
+    pub tts_single: TTSKoko,
+    pub tts_instances: Vec<TTSKoko>,
+    pub last_activity: Option<Arc<AtomicU64>>,
+}
+
 pub async fn create_server(tts_instances: Vec<TTSKoko>) -> Router {
+    create_server_with_idle_tracking(tts_instances, Arc::new(AtomicU64::new(0))).await
+}
+
+pub async fn create_server_with_idle_tracking(
+    tts_instances: Vec<TTSKoko>,
+    last_activity: Arc<AtomicU64>,
+) -> Router {
     info!("Starting TTS server with {} instances", tts_instances.len());
 
     // Use first instance for compatibility with non-streaming endpoints
@@ -451,6 +467,12 @@ pub async fn create_server(tts_instances: Vec<TTSKoko>) -> Router {
         .first()
         .cloned()
         .expect("At least one TTS instance required");
+
+    let state = AppState {
+        tts_single,
+        tts_instances,
+        last_activity: Some(last_activity),
+    };
 
     Router::new()
         .route("/", get(handle_home))
@@ -460,10 +482,46 @@ pub async fn create_server(tts_instances: Vec<TTSKoko>) -> Router {
         .route("/v1/models/{model}", get(handle_model))
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(CorsLayer::permissive())
-        .with_state((tts_single, tts_instances))
+        .with_state(state)
 }
 
 pub use axum::serve;
+
+/// Serve with idle-based graceful shutdown
+///
+/// If `idle_timeout` is None, the server runs forever.
+/// Otherwise, it exits after being idle for the specified seconds.
+pub async fn serve_with_idle_shutdown(
+    listener: tokio::net::UnixListener,
+    make_service: axum::routing::IntoMakeService<Router>,
+    last_activity: Arc<AtomicU64>,
+    idle_timeout: Option<u64>,
+) -> Result<(), std::io::Error> {
+    axum::serve(listener, make_service)
+        .with_graceful_shutdown(async move {
+            let Some(timeout) = idle_timeout else {
+                std::future::pending::<()>().await;
+                return;
+            };
+
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+
+                let last = last_activity.load(Ordering::Relaxed);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let idle_secs = now.saturating_sub(last);
+
+                if idle_secs >= timeout {
+                    info!("Server idle for {} seconds, shutting down", idle_secs);
+                    return;
+                }
+            }
+        })
+        .await
+}
 
 #[derive(Debug)]
 enum SpeechError {
@@ -511,9 +569,18 @@ async fn handle_home() -> &'static str {
 }
 
 async fn handle_tts(
-    State((tts_single, tts_instances)): State<(TTSKoko, Vec<TTSKoko>)>,
+    State(state): State<AppState>,
     request: axum::extract::Request,
 ) -> Result<Response, SpeechError> {
+    // Update last activity timestamp for idle tracking
+    if let Some(ref last_activity) = state.last_activity {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        last_activity.store(now, Ordering::Relaxed);
+    }
+
     let (request_id, request_start) = request
         .extensions()
         .get::<(String, Instant)>()
@@ -560,7 +627,7 @@ async fn handle_tts(
 
     if should_stream {
         return handle_tts_streaming(
-            tts_instances,
+            state.tts_instances,
             input,
             voice,
             response_format,
@@ -573,7 +640,7 @@ async fn handle_tts(
     }
 
     // Non-streaming mode (existing implementation)
-    let raw_audio = tts_single
+    let raw_audio = state.tts_single
         .tts_raw_audio(
             &input,
             "en-us",
@@ -962,10 +1029,8 @@ async fn handle_tts_streaming(
         })?)
 }
 
-async fn handle_voices(
-    State((tts_single, _tts_instances)): State<(TTSKoko, Vec<TTSKoko>)>,
-) -> Json<VoicesResponse> {
-    let mut voices = tts_single.get_available_voices();
+async fn handle_voices(State(state): State<AppState>) -> Json<VoicesResponse> {
+    let mut voices = state.tts_single.get_available_voices();
 
     // Add OpenAI voice names for compatibility
     let openai_voices = vec![

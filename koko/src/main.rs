@@ -9,6 +9,7 @@ use std::{
     fs::{self},
     io::Write,
     path::Path,
+    sync::atomic::AtomicU64,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing_subscriber::fmt::time::FormatTime;
@@ -71,7 +72,11 @@ enum Mode {
 
     /// Start an OpenAI-compatible HTTP server
     #[command(name = "openai", alias = "oai", long_flag_aliases = ["oai", "openai"])]
-    OpenAI,
+    OpenAI {
+        /// Exit after being idle for this many seconds
+        #[arg(long = "idle-timeout", value_name = "SECONDS")]
+        idle_timeout: Option<u64>,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -369,7 +374,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Words per second: {:.2}", words_per_second);
             }
 
-            Mode::OpenAI => {
+            Mode::OpenAI { idle_timeout } => {
                 // Create multiple independent TTS instances for parallel processing
                 let mut tts_instances = Vec::new();
                 for i in 0..instances {
@@ -382,15 +387,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let instance = TTSKoko::new(&model_path, &data_path).await;
                     tts_instances.push(instance);
                 }
-                let app = kokoros_openai::create_server(tts_instances).await;
+
+                // Create shared last activity timestamp for idle tracking
+                let last_activity = std::sync::Arc::new(AtomicU64::new(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                ));
+
+                let app = kokoros_openai::create_server_with_idle_tracking(
+                    tts_instances,
+                    last_activity.clone(),
+                )
+                .await;
 
                 let mut listenfd = ListenFd::from_env();
 
                 let listener = listenfd.take_unix_listener(0)?.expect("listener not found");
                 tracing::info!("Starting OpenAI-compatible HTTP server via listenfd (Unix)");
+                if let Some(timeout) = idle_timeout {
+                    tracing::info!("Idle timeout enabled: {} seconds", timeout);
+                }
                 listener.set_nonblocking(true)?;
                 let listener = tokio::net::UnixListener::from_std(listener)?;
-                kokoros_openai::serve(listener, app.into_make_service()).await?;
+
+                // Serve with idle-based graceful shutdown
+                kokoros_openai::serve_with_idle_shutdown(
+                    listener,
+                    app.into_make_service(),
+                    last_activity,
+                    idle_timeout,
+                )
+                .await?;
             }
 
             Mode::Stream => {
