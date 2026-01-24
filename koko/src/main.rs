@@ -264,13 +264,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             mode,
         } = Cli::parse();
 
-        let tts = TTSKoko::new(&model_path, &data_path).await;
-
         match mode {
             Mode::File {
                 input_path,
                 save_path_format,
             } => {
+                let tts = TTSKoko::new(&model_path, &data_path).await;
                 let file_content = fs::read_to_string(input_path)?;
                 for (i, line) in file_content.lines().enumerate() {
                     let stripped_line = line.trim();
@@ -327,6 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             Mode::Text { text, save_path } => {
+                let tts = TTSKoko::new(&model_path, &data_path).await;
                 let s = std::time::Instant::now();
                 if timestamps {
                     match tts.tts_timestamped_raw_audio(
@@ -423,6 +423,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             Mode::Stream => {
+                let tts = TTSKoko::new(&model_path, &data_path).await;
                 let stdin = tokio::io::stdin();
                 let reader = BufReader::new(stdin);
                 let mut lines = reader.lines();
